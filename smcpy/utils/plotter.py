@@ -30,7 +30,7 @@ ANY SUCH MATTER SHALL BE THE IMMEDIATE, UNILATERAL TERMINATION OF THIS
 AGREEMENT.
 '''
 
-import imp
+import importlib
 import matplotlib.pyplot as plt
 import numpy as np
 import os
@@ -49,7 +49,7 @@ def _mpi_decorator(func):
         function using rank 0.
         """
         try:
-            imp.find_module('mpi4py')
+            importlib.find_module('mpi4py')
 
             from mpi4py import MPI
             comm = MPI.COMM_WORLD.Clone()
