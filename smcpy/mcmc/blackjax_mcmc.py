@@ -6,7 +6,7 @@ import jax
 from abc import ABC, abstractmethod
 from tqdm import tqdm
 
-from mcmc_base import MCMCBase
+from .mcmc_base import MCMCBase
 
 class BlackJaxMCMC(MCMCBase):
     """
