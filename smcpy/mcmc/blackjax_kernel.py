@@ -51,17 +51,17 @@ class BlackJaxKernel(MCMCKernel):
         # IMPORTANT: THIS DOES USE JIT
         def log_prob_fn_jax(params):
 
-            def log_prob_fn_np(params):
-                params_np = np.array(params).reshape(1, -1)
+            def log_prob_fn_np(params_flat):
+                params_np = np.array(params_flat).reshape(1, -1)
                 log_prior = np.sum(self._mcmc.evaluate_log_priors(params_np))
                 log_like = self._mcmc.evaluate_log_likelihood(params_np)[0]
                 
                 return float(log_prior + phi * log_like)
         
             result_shape_dtype = jax.ShapeDtypeStruct((), jnp.float32)
-            result = jax.pure_callback(log_prob_fn_np, result_shape_dtype, params)
             
-            return result
+            
+            return jax.pure_callback(log_prob_fn_np, result_shape_dtype, params)
         
         # JIT compile the log probability function
         # Not being used as it won't work with NumPy conversion
@@ -77,7 +77,7 @@ class BlackJaxKernel(MCMCKernel):
         
         # Replace log_prob_fn with jitted_log_prob if workaround exists
         # Then maybe can vectorize with vmap()?
-        rmh = blackjax.rmh(log_prob_fn_jax, proposal_generator)
+        rmh = blackjax.rmh(jitted_log_prob, proposal_generator)
         
         for i in range(num_particles):
             current_params = param_array[i]
