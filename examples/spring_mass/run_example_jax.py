@@ -16,17 +16,19 @@ measure_t_grid = jnp.arange(0.0, 5.0, 0.2)  # time
 model = SpringMassModel(state0, measure_t_grid)
 
 # Load data
-std_dev = 0.5
+sigma = 0.5
+from datetime import date
+
 displacement_data = jnp.array(np.genfromtxt(Path(__file__).parent / "noisy_data.txt"))
 
 # Define prior distributions & MCMC kernel
-key = jax.random.PRNGKey(0)
+key = jax.random.key(int(date.today().strftime("%Y%m%d")))
 priors = [
     distrax.Uniform(low=0.0, high=10.0),
     distrax.Uniform(low=0.0, high=10.0),
 ]
 # Create the VectorMCMC object
-vector_mcmc = JAXMCMC(model.evaluate, displacement_data, priors, std_dev)
+vector_mcmc = JAXMCMC(model.evaluate, displacement_data, priors, sigma)
 
 # Create the simple BlackJax kernel
 mcmc_kernel = BlackJaxKernel(vector_mcmc, ["K", "g"])

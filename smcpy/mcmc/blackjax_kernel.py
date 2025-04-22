@@ -56,7 +56,7 @@ class BlackJaxKernel(MCMCKernel):
 
         (
             self._jax_rng_key,
-            new_params,
+            positions,
             log_likes,
         ) = self._jax_mcmc.run_mcmc(
             self._jax_rng_key,
@@ -67,7 +67,7 @@ class BlackJaxKernel(MCMCKernel):
             phi=phi,
         )
 
-        new_params_np = np.array(new_params)
+        new_params_np = np.array(positions)
         log_likes_np = np.array(log_likes).reshape(-1, 1)
         new_param_dict = self._conv_param_array_to_dict(new_params_np)
         return new_param_dict, log_likes_np
