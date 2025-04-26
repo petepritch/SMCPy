@@ -1,8 +1,14 @@
+import os
+import multiprocessing
+
+os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count={}".format(
+    multiprocessing.cpu_count()
+)
+
 import jax
 import jax.numpy as jnp
 import blackjax
 from functools import partial
-import multiprocessing
 
 
 class JAXMCMC:
@@ -103,9 +109,34 @@ class JAXMCMC:
         if sampler_kwargs is None:
             sampler_kwargs = {}
 
-        # curried log posterior with temperature
-        def log_prob_fn(p):
-            return self.evaluate_log_posterior(p, phi)
+        def inference_loop(rng_key, kernel, initial_state, num_samples):
+
+            @jax.jit
+            def one_step(state, rng_key):
+                state, _ = kernel(rng_key, state)
+                return state, state
+
+            keys = jax.random.split(rng_key, num_samples)
+            _, states = jax.lax.scan(one_step, initial_state, keys)
+
+            return states
+
+        def inference_loop_multiple_chains(
+            rng_key, kernel, initial_state, num_samples, num_chains
+        ):
+
+            @jax.jit
+            def one_step(states, rng_key):
+                keys = jax.random.split(rng_key, num_chains)
+                states, _ = jax.vmap(kernel)(keys, states)
+                return states, states
+
+            keys = jax.random.split(rng_key, num_samples)
+            _, states = jax.lax.scan(one_step, initial_state, keys)
+
+            return states
+
+        log_prob_fn = jax.jit(lambda p: self.evaluate_log_posterior(p, phi))
 
         if initial_params.ndim == 1:
             initial_params = initial_params.reshape(1, -1)
@@ -118,25 +149,31 @@ class JAXMCMC:
             rw = blackjax.additive_step_random_walk(
                 log_prob_fn, blackjax.mcmc.random_walk.normal(sigma)
             )
-
-            def inference_loop(rng_key, kernel, initial_state, num_samples, num_chains):
-
-                @jax.jit
-                def one_step(states, rng_key):
-                    keys = jax.random.split(rng_key, num_chains)
-                    states, _ = jax.vmap(kernel)(keys, states)
-                    return states, states
-
-                keys = jax.random.split(rng_key, num_samples)
-                _, states = jax.lax.scan(one_step, initial_state, keys)
-
-                return states
-
             initial_states = jax.vmap(rw.init, in_axes=(0))(initial_params)
-
             rng_key, sample_key = jax.random.split(rng_key)
-            new_states = inference_loop(
+            new_states = inference_loop_multiple_chains(
                 sample_key, rw.step, initial_states, num_samples, batch_size
+            )
+
+        elif algorithm == "nuts":
+
+            inv_mass_matrix = sampler_kwargs.pop("inv_mass_matrix", jnp.eye(num_params))
+            step_size = sampler_kwargs.pop("step_size", 1e-3)
+            nuts = blackjax.nuts(log_prob_fn, step_size, inv_mass_matrix)
+            initial_states = jax.vmap(nuts.init, in_axes=(0))(initial_params)
+            rng_key, sample_key = jax.random.split(rng_key)
+            new_states = inference_loop_multiple_chains(
+                sample_key, nuts.step, initial_states, num_samples, batch_size
+            )
+
+        elif algorithm == "mala":
+
+            step_size = sampler_kwargs.pop("step_size", 1e-3)
+            mala = blackjax.mala(log_prob_fn, step_size)
+            initial_states = jax.vmap(mala.init, in_axes=(0))(initial_params)
+            rng_key, sample_key = jax.random.split(rng_key)
+            new_states = inference_loop_multiple_chains(
+                sample_key, mala.step, initial_states, num_samples, batch_size
             )
 
         else:
@@ -144,46 +181,15 @@ class JAXMCMC:
                 f"Vectorized implementation for {algorithm} not implemented."
             )
 
-        positions = new_states.position[-1]
-        log_likes = self.evaluate_log_likelihood(positions)
-        return jax.random.fold_in(rng_key, 0), positions, log_likes
+        try:
+            positions = new_states.position
+        except (AttributeError, TypeError):
+            positions = new_states
 
-        # if algorithm == "rmh":
-        #     # Change this to "cov" for consistency?
-        #     sigma = sampler_kwargs.pop("sigma", jnp.eye(num_params) * 0.1)
+        if hasattr(positions, "ndim") and positions.ndim == 3:
+            final_positions = positions[-1]
+        else:
+            final_positions = positions
 
-        #     states = initial_params
-        #     log_probs = jax.vmap(log_prob_fn)(states)
-
-        #     for step in range(num_samples):
-        #         rng_key, step_key = jax.random.split(rng_key)
-        #         particle_keys = jax.random.split(step_key, batch_size)
-
-        #         proposal_noise = jax.random.normal(
-        #             step_key, shape=(batch_size, num_params)
-        #         ) * jnp.sqrt(jnp.diag(sigma))
-        #         proposals = states + proposal_noise
-
-        #         proposal_log_probs = jax.vmap(log_prob_fn)(proposals)
-
-        #         log_accept_ratios = proposal_log_probs - log_probs
-
-        #         accept_keys = jax.random.split(rng_key, batch_size)
-        #         u = jax.random.uniform(rng_key, shape=(batch_size,))
-
-        #         accept = log_accept_ratios > jnp.log(u)
-        #         accept = jnp.expand_dims(accept, axis=1)
-
-        #         states = jnp.where(accept, proposals, states)
-        #         log_probs = jnp.where(accept[:, 0], proposal_log_probs, log_probs)
-
-        #     final_positions = states
-        # else:
-        #     raise NotImplementedError(
-        #         f"Vectorized implementation for {algorithm} not available yet. "
-        #         "Use 'rmh' or implement a custom version."
-        #     )
-        # print(f"Final positions shape: {final_positions.shape}")
-        # log_likes = self.evaluate_log_likelihood(final_positions)
-        # print(f"Log likes shape: {log_likes.shape}")
-        # return jax.random.fold_in(rng_key, 0), final_positions, log_likes
+        log_likes = self.evaluate_log_likelihood(final_positions)
+        return jax.random.fold_in(rng_key, 0), final_positions, log_likes
